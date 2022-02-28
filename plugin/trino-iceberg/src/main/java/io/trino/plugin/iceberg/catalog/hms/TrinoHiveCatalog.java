@@ -32,10 +32,11 @@ import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HivePrincipal;
 import io.trino.plugin.hive.metastore.PrincipalPrivileges;
 import io.trino.plugin.hive.util.HiveUtil;
+import io.trino.plugin.iceberg.ColumnIdentity;
 import io.trino.plugin.iceberg.IcebergMaterializedViewDefinition;
 import io.trino.plugin.iceberg.IcebergUtil;
+import io.trino.plugin.iceberg.catalog.AbstractTrinoCatalog;
 import io.trino.plugin.iceberg.catalog.IcebergTableOperationsProvider;
-import io.trino.plugin.iceberg.catalog.TrinoCatalog;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnMetadata;
@@ -57,7 +58,6 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.Transaction;
 
 import java.io.IOException;
@@ -105,16 +105,10 @@ import static java.util.UUID.randomUUID;
 import static org.apache.hadoop.hive.metastore.TableType.VIRTUAL_VIEW;
 import static org.apache.iceberg.BaseMetastoreTableOperations.ICEBERG_TABLE_TYPE_VALUE;
 import static org.apache.iceberg.BaseMetastoreTableOperations.TABLE_TYPE_PROP;
-import static org.apache.iceberg.TableMetadata.newTableMetadata;
 import static org.apache.iceberg.TableProperties.DEFAULT_FILE_FORMAT_DEFAULT;
-import static org.apache.iceberg.TableProperties.OBJECT_STORE_PATH;
-import static org.apache.iceberg.TableProperties.WRITE_DATA_LOCATION;
-import static org.apache.iceberg.TableProperties.WRITE_METADATA_LOCATION;
-import static org.apache.iceberg.TableProperties.WRITE_NEW_DATA_LOCATION;
-import static org.apache.iceberg.Transactions.createTableTransaction;
 
 public class TrinoHiveCatalog
-        implements TrinoCatalog
+        extends AbstractTrinoCatalog
 {
     private static final Logger log = Logger.get(TrinoHiveCatalog.class);
     private static final String ICEBERG_MATERIALIZED_VIEW_COMMENT = "Presto Materialized View";
@@ -132,11 +126,10 @@ public class TrinoHiveCatalog
     private final HiveMetastore metastore;
     private final HdfsEnvironment hdfsEnvironment;
     private final TypeManager typeManager;
-    private final IcebergTableOperationsProvider tableOperationsProvider;
     private final String trinoVersion;
-    private final boolean useUniqueTableLocation;
     private final boolean isUsingSystemSecurity;
     private final boolean deleteSchemaLocationsFallback;
+
 
     private final Map<SchemaTableName, TableMetadata> tableMetadataCache = new ConcurrentHashMap<>();
     private final ViewReaderUtil.PrestoViewReader viewReader = new ViewReaderUtil.PrestoViewReader();
@@ -152,15 +145,19 @@ public class TrinoHiveCatalog
             boolean isUsingSystemSecurity,
             boolean deleteSchemaLocationsFallback)
     {
+        super(tableOperationsProvider, useUniqueTableLocation);
         this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.metastore = requireNonNull(metastore, "metastore is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
-        this.tableOperationsProvider = requireNonNull(tableOperationsProvider, "tableOperationsProvider is null");
         this.trinoVersion = requireNonNull(trinoVersion, "trinoVersion is null");
-        this.useUniqueTableLocation = useUniqueTableLocation;
         this.isUsingSystemSecurity = isUsingSystemSecurity;
         this.deleteSchemaLocationsFallback = deleteSchemaLocationsFallback;
+    }
+
+    public HiveMetastore getMetastore()
+    {
+        return metastore;
     }
 
     @Override
@@ -268,15 +265,14 @@ public class TrinoHiveCatalog
             String location,
             Map<String, String> properties)
     {
-        TableMetadata metadata = newTableMetadata(schema, partitionSpec, location, properties);
-        TableOperations ops = tableOperationsProvider.createTableOperations(
-                metastore,
+        return newCreateTableTransaction(
                 session,
-                schemaTableName.getSchemaName(),
-                schemaTableName.getTableName(),
-                isUsingSystemSecurity ? Optional.empty() : Optional.of(session.getUser()),
-                Optional.of(location));
-        return createTableTransaction(schemaTableName.toString(), ops, metadata);
+                schemaTableName,
+                schema,
+                partitionSpec,
+                location,
+                properties,
+                isUsingSystemSecurity ? Optional.empty() : Optional.of(session.getUser()));
     }
 
     @Override
@@ -322,22 +318,16 @@ public class TrinoHiveCatalog
     {
         TableMetadata metadata = tableMetadataCache.computeIfAbsent(
                 schemaTableName,
-                ignore -> ((BaseTable) loadIcebergTable(metastore, tableOperationsProvider, session, schemaTableName)).operations().current());
+                ignore -> ((BaseTable) loadIcebergTable(this, tableOperationsProvider, session, schemaTableName)).operations().current());
 
-        return getIcebergTableWithMetadata(metastore, tableOperationsProvider, session, schemaTableName, metadata);
+        return getIcebergTableWithMetadata(this, tableOperationsProvider, session, schemaTableName, metadata);
     }
 
     @Override
     public void updateTableComment(ConnectorSession session, SchemaTableName schemaTableName, Optional<String> comment)
     {
         metastore.commentTable(schemaTableName.getSchemaName(), schemaTableName.getTableName(), comment);
-        Table icebergTable = loadTable(session, schemaTableName);
-        if (comment.isEmpty()) {
-            icebergTable.updateProperties().remove(TABLE_COMMENT).commit();
-        }
-        else {
-            icebergTable.updateProperties().set(TABLE_COMMENT, comment.get()).commit();
-        }
+        super.updateTableComment(session, schemaTableName, comment);
     }
 
     @Override
@@ -345,10 +335,7 @@ public class TrinoHiveCatalog
     {
         Database database = metastore.getDatabase(schemaTableName.getSchemaName())
                 .orElseThrow(() -> new SchemaNotFoundException(schemaTableName.getSchemaName()));
-        String tableNameForLocation = schemaTableName.getTableName();
-        if (useUniqueTableLocation) {
-            tableNameForLocation += "-" + randomUUID().toString().replace("-", "");
-        }
+        String tableNameForLocation = createNewTableName(schemaTableName.getTableName());
         return getTableDefaultLocation(database, new HdfsEnvironment.HdfsContext(session), hdfsEnvironment,
                 schemaTableName.getSchemaName(), tableNameForLocation).toString();
     }
@@ -663,8 +650,6 @@ public class TrinoHiveCatalog
     public void updateColumnComment(ConnectorSession session, SchemaTableName schemaTableName, ColumnIdentity columnIdentity, Optional<String> comment)
     {
         metastore.commentColumn(schemaTableName.getSchemaName(), schemaTableName.getTableName(), columnIdentity.getName(), comment);
-
-        Table icebergTable = loadTable(session, schemaTableName);
-        icebergTable.updateSchema().updateColumnDoc(columnIdentity.getName(), comment.orElse(null)).commit();
+        super.updateColumnComment(session, schemaTableName, columnIdentity, comment);
     }
 }

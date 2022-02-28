@@ -11,11 +11,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.trino.plugin.iceberg.catalog;
+package io.trino.plugin.iceberg.catalog.hms;
 
-import io.trino.spi.security.ConnectorIdentity;
+import io.trino.plugin.hive.metastore.cache.SharedHiveMetastoreCache;
 
-public interface TrinoCatalogFactory
+import javax.inject.Inject;
+
+public class MetastoreValidator
 {
-    TrinoCatalog create(ConnectorIdentity identity);
+    @Inject
+    public MetastoreValidator(SharedHiveMetastoreCache metastoreCache)
+    {
+        if (metastoreCache.isEnabled()) {
+            throw new RuntimeException("Hive metastore caching must not be enabled for Iceberg");
+        }
+    }
 }

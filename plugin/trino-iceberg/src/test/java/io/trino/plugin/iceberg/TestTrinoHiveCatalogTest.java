@@ -38,7 +38,7 @@ import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.trino.plugin.hive.metastore.file.FileHiveMetastore.createTestingFileHiveMetastore;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class TrinoHiveCatalogTest
+public class TestTrinoHiveCatalogTest
         extends BaseTrinoCatalogTest
 {
     private final HiveMetastore metastore;
@@ -46,7 +46,7 @@ public class TrinoHiveCatalogTest
     private final java.nio.file.Path tempDir;
     private final File metastoreDir;
 
-    public TrinoHiveCatalogTest()
+    public TestTrinoHiveCatalogTest()
             throws IOException
     {
         HdfsConfig config = new HdfsConfig();
