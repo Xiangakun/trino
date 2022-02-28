@@ -90,6 +90,7 @@ import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERT
 import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergUtil.getIcebergTableWithMetadata;
 import static io.trino.plugin.iceberg.IcebergUtil.loadIcebergTable;
+import static io.trino.plugin.iceberg.IcebergUtil.validateTableCanBeDropped;
 import static io.trino.plugin.iceberg.PartitionFields.toPartitionFields;
 import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.INVALID_SCHEMA_PROPERTY;
@@ -303,12 +304,7 @@ class TrinoHiveCatalog
     {
         // TODO: support path override in Iceberg table creation: https://github.com/trinodb/trino/issues/8861
         Table table = loadTable(session, schemaTableName);
-        if (table.properties().containsKey(OBJECT_STORE_PATH) ||
-                table.properties().containsKey(WRITE_NEW_DATA_LOCATION) ||
-                table.properties().containsKey(WRITE_METADATA_LOCATION) ||
-                table.properties().containsKey(WRITE_DATA_LOCATION)) {
-            throw new TrinoException(NOT_SUPPORTED, "Table " + schemaTableName + " contains Iceberg path override properties and cannot be dropped from Trino");
-        }
+        validateTableCanBeDropped(table, schemaTableName);
         metastore.dropTable(schemaTableName.getSchemaName(), schemaTableName.getTableName(), true);
     }
 
